@@ -1,28 +1,39 @@
 import yfinance as yf
 import pandas as pd
 import requests
+import os
 from datetime import datetime
 
-# --- 設定區 ---
-import os
+# 從 GitHub Secrets 讀取 Webhook 網址
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK")
-SYMBOL = "^BDI"  # yfinance 上的 BDI 指數代碼 (註：若無數據需改用爬蟲獲取)
 
 def send_discord_message(content):
+    if not DISCORD_WEBHOOK_URL:
+        print("錯誤: 找不到 Discord Webhook 網址，請檢查 Secrets 設定。")
+        return
     data = {"content": content}
-    response = requests.post(DISCORD_WEBHOOK_URL, json=data)
-    return response.status_code
+    try:
+        response = requests.post(DISCORD_WEBHOOK_URL, json=data)
+        response.raise_for_status()
+        print("訊息發送成功！")
+    except Exception as e:
+        print(f"發送失敗: {e}")
 
 def monitor_bdi_strategy():
-    # 1. 抓取歷史數據 (最近 60 天)
-    ticker = yf.Ticker(SYMBOL)
+    # BDI 在 yfinance 上的代碼通常是 BDI.L (倫敦) 或 ^BDI，
+    # 這裡使用較穩定的替代方案 BDRY (散裝航運 ETF，與 BDI 極度正相關) 或嘗試抓取 ^BDI
+    symbol = "^BDI" 
+    print(f"正在抓取 {symbol} 數據...")
+    
+    ticker = yf.Ticker(symbol)
     df = ticker.history(period="60d")
     
-    if df.empty:
-        print("無法取得 BDI 數據，請檢查代碼或來源。")
-        return
+    if df.empty or len(df) < 20:
+        # 如果 BDI 沒數據，改抓 BDRY (散裝航運 ETF) 作為備案
+        print("BDI 數據獲取失敗，嘗試抓取 BDRY ETF...")
+        df = yf.Ticker("BDRY").history(period="60d")
 
-    # 2. 計算技術指標
+    # 計算技術指標
     df['MA10'] = df['Close'].rolling(window=10).mean()
     df['MA20'] = df['Close'].rolling(window=20).mean()
     df['Change'] = df['Close'].pct_change() * 100
@@ -33,25 +44,23 @@ def monitor_bdi_strategy():
     last_ma20 = df['MA20'].iloc[-1]
     daily_change = df['Change'].iloc[-1]
 
-    # 3. 策略判斷
-    signal = None
-    msg = f"📊 **BDI 指數監控報告 ({datetime.now().strftime('%Y-%m-%d')})**\n" \
-          f"最新收盤價: {last_price:.2f} ({daily_change:+.2f}%)\n"
+    msg = f"🚢 **BDI 散裝航運監控報告** ({datetime.now().strftime('%Y-%m-%d')})\n" \
+          f"最新收盤: {last_price:.2f}\n" \
+          f"漲跌幅: {daily_change:+.2f}%\n" \
+          f"10日均線: {last_ma10:.2f} / 20日均線: {last_ma20:.2f}\n" \
+          f"---"
 
-    # 多頭訊號：突破20日線且漲幅大
-    if last_price > last_ma20 and prev_price <= df['MA20'].iloc[-2] and daily_change > 2:
-        signal = "🚀 **【買入訊號】** BDI 帶量突破 20 日線，散裝航運動能轉強！"
-    
-    # 空頭訊號：跌破10日線
+    signal = ""
+    # 多頭訊號：收盤突破20日線
+    if last_price > last_ma20 and prev_price <= df['MA20'].iloc[-2]:
+        signal = "\n🚀 **【買入訊號】** 指數突破 20 日線，散裝航運轉強，關注：裕民、慧洋、新興。"
+    # 空頭訊號：收盤跌破10日線
     elif last_price < last_ma10 and prev_price >= df['MA10'].iloc[-2]:
-        signal = "⚠️ **【賣出訊號】** BDI 跌破 10 日支撐，短線趨勢轉弱，請注意部位。"
-
-    # 4. 發送通知
-    if signal:
-        send_discord_message(msg + signal)
-        print("訊號已發送至 Discord")
+        signal = "\n⚠️ **【警示訊號】** 指數跌破 10 日線，短線動能轉弱，注意停損。"
     else:
-        print("今日無顯著訊號")
+        signal = "\n✅ 目前趨勢穩定，無變動訊號。"
+
+    send_discord_message(msg + signal)
 
 if __name__ == "__main__":
     monitor_bdi_strategy()
