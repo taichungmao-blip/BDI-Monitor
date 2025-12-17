@@ -4,7 +4,8 @@ import requests
 from datetime import datetime
 
 # --- 設定區 ---
-DISCORD_WEBHOOK_URL = "你的_DISCORD_WEBHOOK_網址"
+import os
+DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK")
 SYMBOL = "^BDI"  # yfinance 上的 BDI 指數代碼 (註：若無數據需改用爬蟲獲取)
 
 def send_discord_message(content):
