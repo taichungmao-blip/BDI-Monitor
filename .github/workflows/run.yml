@@ -1,0 +1,28 @@
+name: BDI Daily Monitor
+
+on:
+  schedule:
+    # 每天台灣時間早上 8:30 執行 (UTC 00:30)
+    - cron: '30 0 * * *'
+  workflow_dispatch: # 讓你可以手動點擊執行測試
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 檢出代碼
+        uses: actions/checkout@v3
+
+      - name: 設定 Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: 安裝套件
+        run: |
+          pip install pandas yfinance requests
+
+      - name: 執行監控程式
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+        run: python bdi_monitor.py
