@@ -1,66 +1,67 @@
-import yfinance as yf
-import pandas as pd
-import requests
 import os
-from datetime import datetime
+import requests
+import pandas as pd
+import yfinance as yf
+from datetime import datetime, timedelta
 
-# 從 GitHub Secrets 讀取 Webhook 網址
+# 設定環境變數
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK")
+FINMIND_TOKEN = os.getenv("FINMIND_TOKEN")
+STOCKS = {"2606": "裕民", "2637": "慧洋-KY", "2605": "新興"}
 
-def send_discord_message(content):
-    if not DISCORD_WEBHOOK_URL:
-        print("錯誤: 找不到 Discord Webhook 網址，請檢查 Secrets 設定。")
-        return
-    data = {"content": content}
+def get_chip_info(stock_id):
+    """抓取三大法人買賣超張數"""
+    url = "https://api.finmindtrade.com/api/v4/data"
+    # 抓取最近 3 天的數據以判斷連買
+    start_date = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
+    parameter = {
+        "dataset": "TaiwanStockInstitutionalInvestorsBuySell",
+        "data_id": stock_id,
+        "start_date": start_date,
+        "token": FINMIND_TOKEN,
+    }
     try:
-        response = requests.post(DISCORD_WEBHOOK_URL, json=data)
-        response.raise_for_status()
-        print("訊息發送成功！")
-    except Exception as e:
-        print(f"發送失敗: {e}")
+        resp = requests.get(url, params=parameter).json()
+        df = pd.DataFrame(resp["data"])
+        if df.empty: return "無數據"
+        
+        # 整理當日法人合計買賣超 (外資+投信+自營商)
+        latest_date = df['date'].max()
+        today_data = df[df['date'] == latest_date]
+        net_buy = today_data['buy'].sum() - today_data['sell'].sum()
+        
+        # 計算張數 (單位通常是股，除以 1000)
+        net_shares = int(net_buy / 1000)
+        status = "🔴 賣超" if net_shares < 0 else "🟢 買超"
+        return f"{status} {abs(net_shares):,} 張"
+    except:
+        return "讀取失敗"
 
-def monitor_bdi_strategy():
-    # BDI 在 yfinance 上的代碼通常是 BDI.L (倫敦) 或 ^BDI，
-    # 這裡使用較穩定的替代方案 BDRY (散裝航運 ETF，與 BDI 極度正相關) 或嘗試抓取 ^BDI
-    symbol = "^BDI" 
-    print(f"正在抓取 {symbol} 數據...")
-    
-    ticker = yf.Ticker(symbol)
-    df = ticker.history(period="60d")
-    
-    if df.empty or len(df) < 20:
-        # 如果 BDI 沒數據，改抓 BDRY (散裝航運 ETF) 作為備案
-        print("BDI 數據獲取失敗，嘗試抓取 BDRY ETF...")
-        df = yf.Ticker("BDRY").history(period="60d")
+def run_strategy():
+    # 1. BDI 數據判斷
+    bdi = yf.Ticker("^BDI").history(period="20d")
+    bdi_last = bdi['Close'].iloc[-1]
+    bdi_ma20 = bdi['Close'].rolling(window=20).mean().iloc[-1]
+    bdi_change = bdi['Close'].pct_change().iloc[-1] * 100
 
-    # 計算技術指標
-    df['MA10'] = df['Close'].rolling(window=10).mean()
-    df['MA20'] = df['Close'].rolling(window=20).mean()
-    df['Change'] = df['Close'].pct_change() * 100
+    # 2. 組合 Discord 訊息
+    msg = f"🚢 **散裝航運最強監控** ({datetime.now().strftime('%Y-%m-%d')})\n"
+    msg += f"📊 BDI 指數: {bdi_last:.0f} ({bdi_change:+.2f}%)\n"
+    msg += f"📈 趨勢: {'高於 20MA (多頭)' if bdi_last > bdi_ma20 else '低於 20MA (空頭)'}\n"
+    msg += "---"
 
-    last_price = df['Close'].iloc[-1]
-    prev_price = df['Close'].iloc[-2]
-    last_ma10 = df['MA10'].iloc[-1]
-    last_ma20 = df['MA20'].iloc[-1]
-    daily_change = df['Change'].iloc[-1]
+    for sid, name in STOCKS.items():
+        chip = get_chip_info(sid)
+        msg += f"\n📌 **{name} ({sid})**\n   籌碼面: {chip}"
+        
+        # 綜合評價邏輯
+        if bdi_last > bdi_ma20 and "🟢" in chip:
+            msg += " ✨ [建議關注: 雙多共振]"
+        elif bdi_last < bdi_ma20 and "🔴" in chip:
+            msg += " ⚠️ [建議避開: 基本籌碼雙弱]"
 
-    msg = f"🚢 **BDI 散裝航運監控報告** ({datetime.now().strftime('%Y-%m-%d')})\n" \
-          f"最新收盤: {last_price:.2f}\n" \
-          f"漲跌幅: {daily_change:+.2f}%\n" \
-          f"10日均線: {last_ma10:.2f} / 20日均線: {last_ma20:.2f}\n" \
-          f"---"
-
-    signal = ""
-    # 多頭訊號：收盤突破20日線
-    if last_price > last_ma20 and prev_price <= df['MA20'].iloc[-2]:
-        signal = "\n🚀 **【買入訊號】** 指數突破 20 日線，散裝航運轉強，關注：裕民、慧洋、新興。"
-    # 空頭訊號：收盤跌破10日線
-    elif last_price < last_ma10 and prev_price >= df['MA10'].iloc[-2]:
-        signal = "\n⚠️ **【警示訊號】** 指數跌破 10 日線，短線動能轉弱，注意停損。"
-    else:
-        signal = "\n✅ 目前趨勢穩定，無變動訊號。"
-
-    send_discord_message(msg + signal)
+    # 3. 發送
+    requests.post(DISCORD_WEBHOOK_URL, json={"content": msg})
 
 if __name__ == "__main__":
-    monitor_bdi_strategy()
+    run_strategy()
