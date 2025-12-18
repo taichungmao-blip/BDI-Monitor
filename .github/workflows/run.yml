@@ -25,4 +25,5 @@ jobs:
       - name: 執行監控程式
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          FINMIND_TOKEN: ${{ secrets.FINMIND_TOKEN }}
         run: python bdi_monitor.py
