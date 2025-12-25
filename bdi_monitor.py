@@ -42,56 +42,53 @@ def run_strategy():
     ma20_bdi = bdi_data['Close'].rolling(window=20).mean().iloc[-1]
     change_bdi = bdi_data['Close'].pct_change().iloc[-1] * 100
 
-    msg = f"🚢 **散裝航運監控報表** ({datetime.now().strftime('%Y-%m-%d')})\n"
+    msg = f"🚢 **散裝航運監控** ({datetime.now().strftime('%Y-%m-%d %H:%M')})\n"
     msg += f"📊 運價(BDRY): {last_bdi:.2f} ({change_bdi:+.2f}%)\n"
-    msg += f"📈 運價趨勢: {'🔥 多頭' if last_bdi > ma20_bdi else '❄️ 弱勢'}\n"
+    msg += f"📈 運價趨勢: {'🔥 多頭 (20MA上)' if last_bdi > ma20_bdi else '❄️ 弱勢 (20MA下)'}\n"
     msg += "---"
 
     for sid, name in STOCKS.items():
         stock = yf.Ticker(f"{sid}.TW").history(period="60d")
         if stock.empty: continue
         
-        # 價格與漲跌幅
         price = stock['Close'].iloc[-1]
         prev_price = stock['Close'].iloc[-2]
         daily_change = ((price - prev_price) / prev_price) * 100
         
-        # 成交量分析
         vol_today = stock['Volume'].iloc[-1]
         vol_ma5 = stock['Volume'].rolling(window=5).mean().iloc[-1]
-        vol_ratio = vol_today / vol_ma5  # 量比
+        vol_ratio = vol_today / vol_ma5
         
-        # 均線與乖離
         ma20_stock = stock['Close'].rolling(window=20).mean().iloc[-1]
         bias_20 = ((price - ma20_stock) / ma20_stock) * 100
         chip_info = get_institutional_data(sid)
+        is_chip_positive = "🟢" in chip_info
 
-        # 格式化輸出
         msg += f"\n📌 **{name} ({sid})**"
-        msg += f"\n   價格: {price:.2f} ({daily_change:+.1f}%) | 乖離: {bias_20:+.1f}%"
-        msg += f"\n   成交: {int(vol_today):,} 股 (量比: {vol_ratio:.2f}x)"
+        msg += f"\n   報價: {price:.1f} ({daily_change:+.1f}%) | 乖離: {bias_20:+.1f}%"
+        msg += f"\n   成交: {int(vol_today/1000):,} 張 (量比: {vol_ratio:.2f}x)"
         msg += f"\n   籌碼: {chip_info}"
 
-        # --- 進階策略邏輯 ---
-        strategy_tips = []
+        # --- 核心策略判斷 ---
+        if last_bdi > ma20_bdi and is_chip_positive:
+            if bias_20 > 10:
+                msg += "\n   ✋ [策略: 雖強但過熱，不追高]"
+            elif vol_ratio > 1.2:
+                msg += "\n   🚀 [策略: 雙多共振 + 量增攻擊]"
+            else:
+                msg += "\n   🚀 [策略: 雙多共振]"
         
-        # 1. 攻擊信號：運價強 + 股價強 + 量增 + 法人買
-        if last_bdi > ma20_bdi and daily_change > 0 and vol_ratio > 1.2 and "🟢" in chip_info:
-            strategy_tips.append("🚀 [強勢攻擊: 量價齊揚]")
+        elif last_bdi < ma20_bdi and is_chip_positive:
+            if bias_20 < -8:
+                msg += "\n   💎 [策略: 嚴重超跌 + 法人抄底]"
+            else:
+                msg += "\n   💎 [策略: 逆勢抄底，觀察支撐]"
         
-        # 2. 警示信號：價漲量縮
-        elif daily_change > 2 and vol_ratio < 0.8:
-            strategy_tips.append("⚠️ [背離: 價漲量縮，追高小心]")
-            
-        # 3. 支撐信號：超跌 + 法人轉買
-        elif bias_20 < -8 and "🟢" in chip_info:
-            strategy_tips.append("💎 [潛在反彈: 乖離過大+法人抄底]")
-
-        if strategy_tips:
-            msg += f"\n   💡 提示: {' '.join(strategy_tips)}"
+        elif daily_change > 1.5 and vol_ratio < 0.7:
+             msg += "\n   ⚠️ [策略: 價漲量縮，動能疑慮]"
+        
         msg += "\n"
 
-    print(msg) # 終端機預覽
     if DISCORD_WEBHOOK_URL:
         requests.post(DISCORD_WEBHOOK_URL, json={"content": msg})
 
